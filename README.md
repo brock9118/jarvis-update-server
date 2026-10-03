@@ -27,3 +27,17 @@ The Update Log button asks for the password, obtains a short-lived session token
 JARVIS V005 reports its installed `versionName` to `POST /register-version` when the app starts. The endpoint validates semantic versions and records each version only once. The report is best-effort and does not block app startup.
 
 The server writes the updated history back to `updates.json`. On hosts with ephemeral filesystems, treat this as runtime storage only; move the mutable log to a persistent database/storage layer before relying on it as permanent history.
+
+## V008 family API
+
+The same HTTPS host now exposes a small authenticated family-linking API used by JARVIS V008:
+
+- `POST /family/create` — creates a family and makes the device the leader.
+- `POST /family/invite` — leader-only; creates a single-use Child or Elderly invitation code.
+- `POST /family/join` — consumes a single-use invitation and links the device.
+- `GET /family/status` — authenticated family members can see linked device names and roles.
+- `POST /family/leave` — removes the current device; a leader dissolves the family.
+
+V008 intentionally does **not** transmit, collect, or store family location. Location sharing will require a later release with explicit member controls.
+
+Family records are stored in `families.json` for this development build. Render free web-service filesystems are not durable storage, so this is suitable for testing but not the final production architecture. A persistent database should be added before relying on Family Mode in production.
