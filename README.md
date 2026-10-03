@@ -17,6 +17,13 @@ Use a real HTTPS host. Do not expose this service over plain HTTP on the public 
 
 ## App configuration
 
-In `MainActivity.kt`, replace `https://YOUR-UPDATE-SERVER.example.com` with the HTTPS base URL of the deployed server, then rebuild the APK.
+The current Android build is configured to use `https://jarvis-update-server.onrender.com` as the HTTPS base URL of the deployed server.
 
 The Update Log button asks for the password, obtains a short-lived session token, and retrieves `/updates`. The server keeps the update history separate from the JARVIS local database.
+
+
+## Automatic version registration (V005)
+
+JARVIS V005 reports its installed `versionName` to `POST /register-version` when the app starts. The endpoint validates semantic versions and records each version only once. The report is best-effort and does not block app startup.
+
+The server writes the updated history back to `updates.json`. On hosts with ephemeral filesystems, treat this as runtime storage only; move the mutable log to a persistent database/storage layer before relying on it as permanent history.

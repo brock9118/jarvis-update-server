@@ -10,7 +10,7 @@ if (!PASSWORD) {
   process.exit(1);
 }
 
-const updates = JSON.parse(fs.readFileSync(path.join(__dirname, 'updates.json'), 'utf8'));
+let updates = JSON.parse(fs.readFileSync(path.join(__dirname, 'updates.json'), 'utf8'));
 const sessions = new Map();
 
 function send(res, code, payload) {
@@ -52,6 +52,24 @@ const server = http.createServer(async (req, res) => {
       const token = crypto.randomBytes(32).toString('hex');
       sessions.set(token, Date.now() + 30 * 60 * 1000);
       return send(res, 200, {token, expiresInSeconds:1800});
+    }
+    if (req.method === 'POST' && req.url === '/register-version') {
+      const body = JSON.parse(await readBody(req));
+      const version = typeof body.version === 'string' ? body.version.trim() : '';
+      if (!/^\d+\.\d+\.\d+$/.test(version)) return send(res, 400, {error:'Invalid version'});
+      const exists = updates.some(item => item.version === version && item.title === 'Installed build detected');
+      if (exists) return send(res, 200, {recorded:false, version});
+      updates.push({
+        version,
+        title: 'Installed build detected',
+        details: `JARVIS reported this installed build automatically on ${new Date().toISOString()}.`
+      });
+      try {
+        fs.writeFileSync(path.join(__dirname, 'updates.json'), JSON.stringify(updates, null, 2) + '\n');
+      } catch (e) {
+        console.warn('Could not persist update history:', e.message);
+      }
+      return send(res, 200, {recorded:true, version});
     }
     if (req.method === 'GET' && req.url === '/updates') {
       if (!validToken(req)) return send(res, 401, {error:'Unauthorized'});
