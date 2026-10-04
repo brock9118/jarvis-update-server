@@ -41,3 +41,7 @@ The same HTTPS host now exposes a small authenticated family-linking API used by
 V008 intentionally does **not** transmit, collect, or store family location. Location sharing will require a later release with explicit member controls.
 
 Family records are stored in `families.json` for this development build. Render free web-service filesystems are not durable storage, so this is suitable for testing but not the final production architecture. A persistent database should be added before relying on Family Mode in production.
+
+
+## ULTRON Guardian (V0.2)
+Set `JARVIS_MAKER_PASSKEY` in Render as a server-side secret. Never put the Maker passkey in the APK or source code. JARVIS devices can read the Guardian state and a Maker-authenticated device can issue PAUSE, SHUTDOWN, or ENABLE commands. Devices must be online/active to receive the remote state promptly; the app also checks the Guardian when opened.

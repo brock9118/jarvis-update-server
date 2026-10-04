@@ -5,7 +5,8 @@ const path = require('path');
 
 const PORT = Number(process.env.PORT || 8080);
 const PASSWORD = process.env.JARVIS_LOG_PASSWORD;
-if (!PASSWORD) {
+const MAKER_PASSKEY = process.env.JARVIS_MAKER_PASSKEY;
+if (!PASSWORD || !MAKER_PASSKEY) {
   console.error('Set JARVIS_LOG_PASSWORD before starting the server.');
   process.exit(1);
 }
@@ -17,18 +18,9 @@ let families = fs.existsSync(familiesPath) ? JSON.parse(fs.readFileSync(families
 const sessions = new Map();
 const familySessions = new Map();
 const invites = new Map();
-
-// Maker / ULTRON emergency-control state.
-// The Maker passkey is NEVER stored in this source file; set JARVIS_MAKER_PASSKEY
-// as a private environment variable in Render.
-const MAKER_PASSKEY = process.env.JARVIS_MAKER_PASSKEY || '';
+const guardianPath = path.join(__dirname, 'ultron_guardian.json');
+let guardian = fs.existsSync(guardianPath) ? JSON.parse(fs.readFileSync(guardianPath, 'utf8')) : {state:'ENABLED', updatedAt:null, reason:'default'};
 const makerSessions = new Map();
-const ultronState = {
-  mode: 'ACTIVE',
-  generation: 0,
-  updatedAt: new Date().toISOString(),
-  pendingCommand: null
-};
 
 function saveFamilies() {
   try { fs.writeFileSync(familiesPath, JSON.stringify(families, null, 2) + '\n'); }
@@ -76,39 +68,9 @@ function familyMember(req) {
 function newId(prefix) { return `${prefix}_${crypto.randomBytes(10).toString('hex')}`; }
 function newInviteCode() { return crypto.randomBytes(4).toString('hex').toUpperCase(); }
 function newFamilyToken() { return crypto.randomBytes(32).toString('hex'); }
+function saveGuardian() { try { fs.writeFileSync(guardianPath, JSON.stringify(guardian, null, 2) + '\n'); } catch (e) { console.warn('Could not persist Guardian state:', e.message); } }
+function validMaker(req) { const token = bearer(req); const expiry = token && makerSessions.get(token); if (!expiry || expiry < Date.now()) { if (token) makerSessions.delete(token); return false; } return true; }
 function safeRole(role) { return role === 'CHILD' || role === 'ELDERLY' ? role : null; }
-
-
-function makerToken(req) {
-  const token = bearer(req);
-  const session = token && makerSessions.get(token);
-  if (!session || session.expires < Date.now()) {
-    if (token) makerSessions.delete(token);
-    return null;
-  }
-  return session;
-}
-
-function timingSafeStringEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const aa = Buffer.from(a);
-  const bb = Buffer.from(b);
-  return aa.length === bb.length && crypto.timingSafeEqual(aa, bb);
-}
-
-function setUltronCommand(command) {
-  ultronState.mode = command === 'WIPE' ? 'WIPE_PENDING'
-    : command === 'PAUSE' ? 'PAUSED'
-    : command === 'DISABLE' ? 'DISABLED'
-    : 'ACTIVE';
-  ultronState.generation += 1;
-  ultronState.updatedAt = new Date().toISOString();
-  ultronState.pendingCommand = {
-    command,
-    generation: ultronState.generation,
-    createdAt: ultronState.updatedAt
-  };
-}
 
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
@@ -140,62 +102,24 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, {updates});
     }
 
-    // Maker authorization / ULTRON emergency-control API.
-    // The Maker passkey stays server-side in JARVIS_MAKER_PASSKEY.
-    if (req.method === 'POST' && (req.url === '/maker/authorize' || req.url === '/maker/login')) {
-      if (!MAKER_PASSKEY) return send(res, 503, {error:'Maker authorization is not configured'});
+    // Maker-only ULTRON Guardian. The Maker passkey is never sent to or stored in the APK.
+    if (req.method === 'POST' && req.url === '/maker/login') {
       const body = JSON.parse(await readBody(req));
-      const passkey = typeof body.passkey === 'string' ? body.passkey : '';
-      if (!timingSafeStringEqual(passkey, MAKER_PASSKEY)) {
-        return send(res, 401, {error:'Maker authorization failed'});
-      }
-      const token = crypto.randomBytes(32).toString('hex');
-      makerSessions.set(token, {expires: Date.now() + 15 * 60 * 1000});
-      return send(res, 200, {authorized:true, token, expiresInSeconds:900});
+      const supplied = Buffer.from(String(body.passkey || '')); const expected = Buffer.from(MAKER_PASSKEY);
+      if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) return send(res, 401, {error:'Maker authorization failed'});
+      const token = crypto.randomBytes(32).toString('hex'); makerSessions.set(token, Date.now() + 15 * 60 * 1000);
+      return send(res, 200, {token, expiresInSeconds:900});
     }
-
-    if (req.method === 'GET' && req.url === '/maker/status') {
-      if (!makerToken(req)) return send(res, 401, {error:'Maker authorization required'});
-      return send(res, 200, {
-        authorized:true,
-        ultronMode: ultronState.mode,
-        generation: ultronState.generation,
-        updatedAt: ultronState.updatedAt,
-        pendingCommand: ultronState.pendingCommand
-      });
+    if (req.method === 'GET' && req.url === '/ultron/guardian/status') {
+      return send(res, 200, {state: guardian.state, updatedAt: guardian.updatedAt, reason: guardian.reason});
     }
-
-    if (req.method === 'POST' && (req.url === '/maker/emergency' || req.url === '/ultron/emergency')) {
-      if (!makerToken(req)) return send(res, 401, {error:'Maker authorization required'});
-      const body = JSON.parse(await readBody(req));
-      const action = String(body.action || '').toUpperCase();
-      if (!['PAUSE','DISABLE','WIPE','RESET'].includes(action)) {
-        return send(res, 400, {error:'Invalid emergency action'});
-      }
-      if (action === 'RESET') {
-        ultronState.mode = 'ACTIVE';
-        ultronState.generation += 1;
-        ultronState.updatedAt = new Date().toISOString();
-        ultronState.pendingCommand = {command:'RESET', generation:ultronState.generation, createdAt:ultronState.updatedAt};
-      } else {
-        setUltronCommand(action);
-      }
-      return send(res, 200, {
-        ok:true,
-        action,
-        ultronMode: ultronState.mode,
-        generation: ultronState.generation,
-        command: ultronState.pendingCommand
-      });
-    }
-
-    if (req.method === 'GET' && req.url === '/ultron/command') {
-      if (!makerToken(req)) return send(res, 401, {error:'Maker authorization required'});
-      return send(res, 200, {
-        command: ultronState.pendingCommand,
-        generation: ultronState.generation,
-        ultronMode: ultronState.mode
-      });
+    if (req.method === 'POST' && req.url === '/ultron/guardian/control') {
+      if (!validMaker(req)) return send(res, 401, {error:'Maker authorization required'});
+      const body = JSON.parse(await readBody(req)); const action = String(body.action || '').toUpperCase();
+      const allowed = new Set(['PAUSE','SHUTDOWN','ENABLE']); if (!allowed.has(action)) return send(res, 400, {error:'Invalid Guardian action'});
+      guardian = {state: action === 'ENABLE' ? 'ENABLED' : action, updatedAt:new Date().toISOString(), reason: action === 'SHUTDOWN' ? 'Maker emergency shutdown' : 'Maker control'};
+      saveGuardian();
+      return send(res, 200, {ok:true, ...guardian});
     }
 
     // V008 family API. Location is intentionally not transmitted or stored.
