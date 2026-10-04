@@ -1,5 +1,7 @@
 {
   "state": "ENABLED",
-  "updatedAt": null,
-  "reason": "default"
+  "updatedAt": "2026-10-04T00:00:00.000Z",
+  "updatedBy": "server-package-default",
+  "shutdownLock": false,
+  "revision": 0
 }

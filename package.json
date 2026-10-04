@@ -1,7 +1,9 @@
 {
-  "name": "jarvis-update-log-server",
-  "version": "1.0.0",
+  "name": "jarvis-update-server",
+  "version": "1.0.0-v014",
   "private": true,
-  "description": "Separate authenticated update-log service for JARVIS",
-  "scripts": { "start": "node server.js" }
+  "description": "JARVIS update log, family foundation, ULTRON Guardian, and V014 AI server",
+  "main": "server.js",
+  "scripts": {"start":"node server.js"},
+  "engines": {"node": ">=18"}
 }
