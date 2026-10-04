@@ -18,6 +18,18 @@ const sessions = new Map();
 const familySessions = new Map();
 const invites = new Map();
 
+// Maker / ULTRON emergency-control state.
+// The Maker passkey is NEVER stored in this source file; set JARVIS_MAKER_PASSKEY
+// as a private environment variable in Render.
+const MAKER_PASSKEY = process.env.JARVIS_MAKER_PASSKEY || '';
+const makerSessions = new Map();
+const ultronState = {
+  mode: 'ACTIVE',
+  generation: 0,
+  updatedAt: new Date().toISOString(),
+  pendingCommand: null
+};
+
 function saveFamilies() {
   try { fs.writeFileSync(familiesPath, JSON.stringify(families, null, 2) + '\n'); }
   catch (e) { console.warn('Could not persist family data:', e.message); }
@@ -66,6 +78,38 @@ function newInviteCode() { return crypto.randomBytes(4).toString('hex').toUpperC
 function newFamilyToken() { return crypto.randomBytes(32).toString('hex'); }
 function safeRole(role) { return role === 'CHILD' || role === 'ELDERLY' ? role : null; }
 
+
+function makerToken(req) {
+  const token = bearer(req);
+  const session = token && makerSessions.get(token);
+  if (!session || session.expires < Date.now()) {
+    if (token) makerSessions.delete(token);
+    return null;
+  }
+  return session;
+}
+
+function timingSafeStringEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const aa = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return aa.length === bb.length && crypto.timingSafeEqual(aa, bb);
+}
+
+function setUltronCommand(command) {
+  ultronState.mode = command === 'WIPE' ? 'WIPE_PENDING'
+    : command === 'PAUSE' ? 'PAUSED'
+    : command === 'DISABLE' ? 'DISABLED'
+    : 'ACTIVE';
+  ultronState.generation += 1;
+  ultronState.updatedAt = new Date().toISOString();
+  ultronState.pendingCommand = {
+    command,
+    generation: ultronState.generation,
+    createdAt: ultronState.updatedAt
+  };
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'Authorization,Content-Type','Access-Control-Allow-Methods':'GET,POST,OPTIONS'}); return res.end();
@@ -94,6 +138,64 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/updates') {
       if (!validToken(req)) return send(res, 401, {error:'Unauthorized'});
       return send(res, 200, {updates});
+    }
+
+    // Maker authorization / ULTRON emergency-control API.
+    // The Maker passkey stays server-side in JARVIS_MAKER_PASSKEY.
+    if (req.method === 'POST' && (req.url === '/maker/authorize' || req.url === '/maker/login')) {
+      if (!MAKER_PASSKEY) return send(res, 503, {error:'Maker authorization is not configured'});
+      const body = JSON.parse(await readBody(req));
+      const passkey = typeof body.passkey === 'string' ? body.passkey : '';
+      if (!timingSafeStringEqual(passkey, MAKER_PASSKEY)) {
+        return send(res, 401, {error:'Maker authorization failed'});
+      }
+      const token = crypto.randomBytes(32).toString('hex');
+      makerSessions.set(token, {expires: Date.now() + 15 * 60 * 1000});
+      return send(res, 200, {authorized:true, token, expiresInSeconds:900});
+    }
+
+    if (req.method === 'GET' && req.url === '/maker/status') {
+      if (!makerToken(req)) return send(res, 401, {error:'Maker authorization required'});
+      return send(res, 200, {
+        authorized:true,
+        ultronMode: ultronState.mode,
+        generation: ultronState.generation,
+        updatedAt: ultronState.updatedAt,
+        pendingCommand: ultronState.pendingCommand
+      });
+    }
+
+    if (req.method === 'POST' && (req.url === '/maker/emergency' || req.url === '/ultron/emergency')) {
+      if (!makerToken(req)) return send(res, 401, {error:'Maker authorization required'});
+      const body = JSON.parse(await readBody(req));
+      const action = String(body.action || '').toUpperCase();
+      if (!['PAUSE','DISABLE','WIPE','RESET'].includes(action)) {
+        return send(res, 400, {error:'Invalid emergency action'});
+      }
+      if (action === 'RESET') {
+        ultronState.mode = 'ACTIVE';
+        ultronState.generation += 1;
+        ultronState.updatedAt = new Date().toISOString();
+        ultronState.pendingCommand = {command:'RESET', generation:ultronState.generation, createdAt:ultronState.updatedAt};
+      } else {
+        setUltronCommand(action);
+      }
+      return send(res, 200, {
+        ok:true,
+        action,
+        ultronMode: ultronState.mode,
+        generation: ultronState.generation,
+        command: ultronState.pendingCommand
+      });
+    }
+
+    if (req.method === 'GET' && req.url === '/ultron/command') {
+      if (!makerToken(req)) return send(res, 401, {error:'Maker authorization required'});
+      return send(res, 200, {
+        command: ultronState.pendingCommand,
+        generation: ultronState.generation,
+        ultronMode: ultronState.mode
+      });
     }
 
     // V008 family API. Location is intentionally not transmitted or stored.
